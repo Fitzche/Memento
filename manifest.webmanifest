@@ -1,0 +1,14 @@
+{
+  "name": "Memento — révisions",
+  "short_name": "Memento",
+  "description": "Fiches de révision : philosophie, maths, physique, allemand et tes propres listes.",
+  "lang": "fr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f7fb",
+  "theme_color": "#4f46e5",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
