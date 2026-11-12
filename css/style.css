@@ -155,3 +155,19 @@ a.card-row, .done .card-row, #res .card-row { grid-template-columns: 1fr 1.3fr; 
 #toast.on { opacity: 1; transform: translate(-50%, 0); }
 .katex { font-size: 1.05em; }
 .face .katex-display, .q .katex-display { margin: .4em 0; }
+
+/* Modifier / supprimer une carte */
+.cr-tools { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.ct { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: .95rem; padding: 2px 4px; line-height: 1.3; opacity: .55; }
+.ct:hover, .ct:focus-visible { opacity: 1; color: var(--accent); }
+.sess-tools { display: flex; gap: 6px; }
+@media (max-width: 560px) { .sess-tools .wide { display: none; } }
+dialog.editor { width: min(560px, calc(100vw - 32px)); max-height: calc(100vh - 32px); border: 1px solid var(--line); border-radius: var(--r);
+  background: var(--panel); color: var(--ink); padding: 18px 20px; box-shadow: var(--shadow); }
+dialog.editor::backdrop { background: rgba(10, 12, 20, .5); }
+dialog.editor h2 { margin: 0 0 6px; font-size: 1.2rem; }
+dialog.editor label { display: block; margin-bottom: 6px; }
+dialog.editor textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+dialog.editor .small { font-size: .85rem; margin: 6px 0; }
+dialog.editor .err { color: var(--bad); font-size: .9rem; margin: 6px 0; }
+dialog.editor .row { margin: 12px 0 0; }

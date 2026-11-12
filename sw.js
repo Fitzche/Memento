@@ -1,6 +1,6 @@
 // Cache de l'application : Memento s'ouvre même sans réseau.
 // Stratégie « réseau d'abord » : chaque ouverture en ligne récupère la dernière version publiée.
-const V = 'memento-1.0.0';
+const V = 'memento-1.1.0';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'css/style.css', 'icons/icon.svg', 'js/registry.js', 'js/app.js',
   'data/philo-1.js', 'data/philo-2.js', 'data/philo-3.js', 'data/philo-4.js', 'data/maths.js', 'data/physique.js',
   'data/allemand-1.js', 'data/allemand-2.js'];

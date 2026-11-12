@@ -38,7 +38,12 @@ let toastTimer;
 function toast(msg) { const t = $('#toast'); t.textContent = msg; t.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('on'), 2200); }
 
 // ---------- Lecture des données ----------
-const DECKS = new Map(); // id → { id, title, desc, section, cards: [{ id, f: [...] }] }
+// Les cartes fournies (data/) ne peuvent pas être réécrites depuis le navigateur : leurs modifications
+// et suppressions sont gardées à part (« edits », « hidden ») et appliquées au chargement, l'identifiant
+// de la carte restant celui d'origine (la progression et les favoris sont donc conservés).
+let cardEdits = store.get('edits', {});   // id → champs modifiés
+let cardHidden = store.get('hidden', {}); // id → 1 (carte supprimée, restaurable)
+const DECKS = new Map(); // id → { id, title, desc, section, cards: [{ id, f: [...], orig }], hidden: [...] }
 function parseSource(section, text) {
   let deck = null;
   for (const raw of text.split('\n')) {
@@ -46,12 +51,14 @@ function parseSource(section, text) {
     if (!line || line.startsWith('//')) continue;
     if (line.startsWith('# ')) {
       const title = line.slice(2).trim();
-      deck = { id: section + '-' + slug(title), title, desc: '', section, cards: [] };
+      deck = { id: section + '-' + slug(title), title, desc: '', section, cards: [], hidden: [] };
       DECKS.set(deck.id, deck);
     } else if (line.startsWith('> ') && deck) deck.desc = line.slice(2).trim();
     else if (deck) {
       const f = line.split(' | ').map((x) => x.trim());
-      deck.cards.push({ id: deck.id + ':' + hash(f[0] + '|' + f[1]), f });
+      const id = deck.id + ':' + hash(f[0] + '|' + f[1]);
+      const card = { id, f: cardEdits[id] ? cardEdits[id].slice() : f, orig: f, n: deck.cards.length + deck.hidden.length };
+      (cardHidden[id] ? deck.hidden : deck.cards).push(card);
     }
   }
 }
@@ -100,6 +107,94 @@ function progressBar(cards) {
     <i class="ok" style="width:${(100 * s.ok) / n}%"></i><i class="learning" style="width:${(100 * s.learning) / n}%"></i></div>`;
 }
 
+// ---------- Modifier / supprimer une carte ----------
+const deckIdOf = (cid) => cid.slice(0, cid.lastIndexOf(':'));
+const isUserCard = (cid) => deckIdOf(cid).startsWith('u-');
+const userCardIndex = (u, cid) => u.cards.findIndex((c) => u.id + ':' + hash(c[0] + '|' + c[1]) === cid);
+function moveCardState(oldId, newId) { // dans une liste perso, l'id dépend du contenu : progression et favori suivent la carte
+  if (oldId === newId) return;
+  if (progress[oldId] != null) { progress[newId] = progress[oldId]; delete progress[oldId]; store.set('progress', progress); }
+  const fav = store.get('fav', {});
+  if (fav[oldId]) { fav[newId] = 1; delete fav[oldId]; store.set('fav', fav); }
+}
+// Enregistre les nouveaux champs d'une carte et met à jour l'objet affiché. Renvoie false si la carte est introuvable.
+function saveCardEdit(card, f) {
+  const did = deckIdOf(card.id);
+  if (isUserCard(card.id)) {
+    const all = userDecks(), u = all.find((x) => x.id === did), k = u ? userCardIndex(u, card.id) : -1;
+    if (k < 0) return false;
+    u.cards[k] = [f[0], f[1]]; saveUserDecks(all);
+    const nid = did + ':' + hash(f[0] + '|' + f[1]);
+    moveCardState(card.id, nid); card.id = nid;
+  } else {
+    const base = DECKS.get(did)?.cards.find((c) => c.id === card.id);
+    if (!base) return false;
+    const same = base.orig.length <= f.length && f.every((x, i) => x === (base.orig[i] || ''));
+    if (same) delete cardEdits[card.id]; else cardEdits[card.id] = f;
+    store.set('edits', cardEdits);
+    base.f.splice(0, base.f.length, ...f);
+  }
+  card.f.splice(0, card.f.length, ...f); // met aussi à jour les copies (« tout », favoris) qui partagent ce tableau
+  return true;
+}
+// Supprime une carte : retirée d'une liste perso, ou masquée (restaurable) pour une carte fournie.
+function deleteCard(card) {
+  const did = deckIdOf(card.id);
+  if (isUserCard(card.id)) {
+    const all = userDecks(), u = all.find((x) => x.id === did), k = u ? userCardIndex(u, card.id) : -1;
+    if (k < 0) return false;
+    u.cards.splice(k, 1); saveUserDecks(all);
+    delete progress[card.id]; store.set('progress', progress);
+    const fav = store.get('fav', {}); delete fav[card.id]; store.set('fav', fav);
+  } else {
+    const d = DECKS.get(did), k = d ? d.cards.findIndex((c) => c.id === card.id) : -1;
+    if (k < 0) return false;
+    d.hidden.push(...d.cards.splice(k, 1));
+    cardHidden[card.id] = 1; store.set('hidden', cardHidden);
+  }
+  return true;
+}
+function restoreHidden(d) {
+  for (const c of d.hidden) delete cardHidden[c.id];
+  store.set('hidden', cardHidden);
+  d.cards.push(...d.hidden); d.hidden = [];
+  d.cards.sort((a, b) => a.n - b.n);
+}
+// Fenêtre d'édition d'une carte ; onSaved est appelé après un enregistrement réussi.
+function openCardEditor(card, sec, onSaved) {
+  const user = isUserCard(card.id);
+  const orig = user ? null : DECKS.get(deckIdOf(card.id))?.cards.find((c) => c.id === card.id)?.orig;
+  const dlg = document.createElement('dialog');
+  dlg.className = 'editor';
+  dlg.innerHTML = `<form method="dialog"><h2>Modifier la carte</h2>
+    ${sec.fields.map((name, i) => `<label><span class="lbl">${esc(name)}</span><textarea rows="${i ? 3 : 2}" data-i="${i}">${esc(card.f[i] || '')}</textarea></label>`).join('')}
+    ${sec.id === 'maths' || sec.id === 'physique' ? '<p class="muted small">Les formules s’écrivent en LaTeX entre $…$.</p>' : ''}
+    ${user ? '' : '<p class="muted small">Ta modification reste sur cet appareil (elle est incluse dans la sauvegarde).</p>'}
+    <p class="err" hidden>Les deux premiers champs ne peuvent pas être vides tous les deux.</p>
+    <div class="row"><button value="save" class="btn primary">Enregistrer</button><button value="cancel" class="btn ghost" formnovalidate>Annuler</button>
+      ${orig && cardEdits[card.id] ? '<button type="button" class="btn ghost" id="ce-orig">Revenir à l’original</button>' : ''}</div></form>`;
+  document.body.append(dlg);
+  const areas = [...dlg.querySelectorAll('textarea')];
+  const shut = () => { if (dlg.open) dlg.close(); dlg.remove(); };
+  const finish = (f) => {
+    shut();
+    if (!saveCardEdit(card, f)) toast('Carte introuvable : elle a peut-être déjà été modifiée');
+    else { toast('Carte modifiée'); onSaved(); }
+  };
+  dlg.querySelector('form').onsubmit = (e) => {
+    e.preventDefault();
+    if (e.submitter && e.submitter.value === 'cancel') return shut();
+    const f = areas.map((t) => t.value.trim());
+    if (!f[0] && !f[1]) { dlg.querySelector('.err').hidden = false; return; }
+    finish(f);
+  };
+  const reset = dlg.querySelector('#ce-orig');
+  if (reset) reset.onclick = () => finish(sec.fields.map((_, i) => orig[i] || ''));
+  dlg.addEventListener('close', () => dlg.remove()); // fermeture par Échap
+  dlg.showModal();
+  areas[0].focus();
+}
+
 // ---------- Réglages ----------
 const settings = Object.assign({ reverse: false, count: 20, filter: 'all', theme: 'auto' }, store.get('settings', {}));
 const saveSettings = () => store.set('settings', settings);
@@ -131,7 +226,10 @@ function view(html) {
   if (cleanup) { cleanup(); cleanup = null; }
   app.innerHTML = html; renderMath(app); window.scrollTo(0, 0);
 }
-function onKeys(fn) { document.addEventListener('keydown', fn); cleanup = () => document.removeEventListener('keydown', fn); }
+function onKeys(fn) {
+  const h = (e) => { if (!document.querySelector('dialog[open]')) fn(e); }; // pas de raccourcis pendant l'édition d'une carte
+  document.addEventListener('keydown', h); cleanup = () => document.removeEventListener('keydown', h);
+}
 
 function home() {
   const fav = Object.keys(store.get('fav', {})).length;
@@ -194,8 +292,10 @@ function deckView(id) {
     <div class="row">${d.user ? `<a class="btn" href="#/edit/${id}">Modifier</a><button class="btn" id="share">Partager par lien</button>`
       : d.virtual ? '' : `<button class="btn" id="copy">Copier dans mes listes</button>`}</div>
     <h2 class="sub">Les ${d.cards.length} cartes</h2>
+    ${d.hidden && d.hidden.length ? `<p class="muted">${d.hidden.length} carte${d.hidden.length > 1 ? 's' : ''} supprimée${d.hidden.length > 1 ? 's' : ''} de ce paquet · <button class="btn small ghost" id="restore">Les rétablir</button></p>` : ''}
     <div class="cards">${d.cards.map((c) => { const cs = secOfCard(d, c); return `<div class="card-row st-${state(c.id)}">
-      <button class="star ${fav[c.id] ? 'on' : ''}" data-id="${c.id}" title="Favori">★</button>
+      <div class="cr-tools"><button class="star ${fav[c.id] ? 'on' : ''}" data-id="${c.id}" title="Favori">★</button>
+        <button class="ct" data-edit="${c.id}" title="Modifier">✎</button><button class="ct" data-del="${c.id}" title="Supprimer">✕</button></div>
       <div class="cr-front">${fieldHtml(cs, c, cs.front)}</div>
       <div class="cr-back">${fieldHtml(cs, c, cs.back)}${cs.extra.length ? `<details><summary>Détails</summary>${fieldHtml(cs, c, cs.extra, true)}</details>` : ''}${c.from ? `<small class="muted">${esc(c.from)}</small>` : ''}</div>
     </div>`; }).join('')}</div>`);
@@ -217,6 +317,17 @@ function deckView(id) {
     if (f[b.dataset.id]) delete f[b.dataset.id]; else f[b.dataset.id] = 1;
     store.set('fav', f); b.classList.toggle('on');
   });
+  const find = (cid) => d.cards.find((c) => c.id === cid);
+  app.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => {
+    const c = find(b.dataset.edit); if (c) openCardEditor(c, secOfCard(d, c), () => deckView(id));
+  });
+  app.querySelectorAll('[data-del]').forEach((b) => b.onclick = () => {
+    const c = find(b.dataset.del); if (!c) return;
+    if (!confirm(isUserCard(c.id) ? 'Supprimer définitivement cette carte de ta liste ?' : 'Supprimer cette carte ? Tu pourras la rétablir en bas de cette page.')) return;
+    if (deleteCard(c)) { toast('Carte supprimée'); deckView(id); } else toast('Suppression impossible');
+  });
+  const restore = $('#restore');
+  if (restore) restore.onclick = () => { const n = d.hidden.length; restoreHidden(d); toast(n + ' carte' + (n > 1 ? 's' : '') + ' rétablie' + (n > 1 ? 's' : '')); deckView(id); };
   const copy = $('#copy');
   if (copy) copy.onclick = () => {
     const l = userDecks(), nid = 'u-' + Date.now().toString(36);
@@ -239,13 +350,37 @@ function pickCards(d) {
 
 function sessionHeader(d, i, n, mode) {
   return `<div class="sess-top"><a href="#/d/${d.id}" class="btn small ghost">✕ Quitter</a>
+    <span class="sess-tools"><button class="btn small ghost" id="c-edit" title="Modifier cette carte" aria-label="Modifier cette carte">✎<span class="wide"> Modifier</span></button><button class="btn small ghost bad" id="c-del" title="Supprimer cette carte" aria-label="Supprimer cette carte">🗑<span class="wide"> Supprimer</span></button></span>
     <span>${mode} · ${Math.min(i + 1, n)} / ${n}</span></div><div class="bar thin"><i class="ok" style="width:${(100 * i) / n}%"></i></div>`;
+}
+// Note une réponse en gardant le niveau précédent, pour pouvoir l'annuler si la carte est modifiée ou supprimée.
+function record(results, c, ok) { results.push({ card: c, ok, prev: progress[c.id] }); mark(c.id, ok); }
+// Boutons « Modifier » / « Supprimer » de la carte en cours ; show() réaffiche la séance.
+function bindCardTools(d, cards, i, results, show) {
+  const card = cards[i];
+  const undo = () => { // carte déjà notée dans cette séance : on annule la note, elle sera reposée
+    const r = results[results.length - 1];
+    if (!r || r.card !== card) return;
+    results.pop();
+    if (r.prev == null) delete progress[card.id]; else progress[card.id] = r.prev;
+    store.set('progress', progress);
+  };
+  $('#c-edit').onclick = () => openCardEditor(card, secOfCard(d, card), () => { undo(); show(); });
+  $('#c-del').onclick = () => {
+    const user = isUserCard(card.id);
+    if (!confirm(user ? 'Supprimer définitivement cette carte de ta liste ?' : 'Supprimer cette carte ? Tu pourras la rétablir depuis la page du paquet.')) return;
+    undo();
+    if (!deleteCard(card)) return toast('Suppression impossible');
+    const k = d.cards.indexOf(card); if (k >= 0) d.cards.splice(k, 1); // ne plus la proposer comme mauvaise réponse
+    cards.splice(i, 1); toast('Carte supprimée'); show();
+  };
 }
 function emptySession(d) {
   view(`<div class="done"><h1>Rien à réviser ici</h1><p>Avec le filtre choisi, aucune carte ne correspond. Change les options du paquet.</p>
     <a class="btn primary" href="#/d/${d.id}">Retour au paquet</a></div>`);
 }
 function endSession(d, results, mode) {
+  if (!results.length) { location.hash = '#/d/' + d.id; return; } // toutes les cartes restantes ont été supprimées
   const ok = results.filter((r) => r.ok).length, missed = results.filter((r) => !r.ok);
   view(`<div class="done"><h1>${ok === results.length ? 'Parfait ! 🎉' : 'Séance terminée'}</h1>
     <p class="score">${ok} / ${results.length}</p>
@@ -273,6 +408,7 @@ function flashcards(d, list) {
         <div class="face back"><div class="recall">${fieldHtml(cs, c, sd.front)}</div>${fieldHtml(cs, c, sd.back)}${cs.extra.length ? `<div class="extra">${fieldHtml(cs, c, cs.extra, true)}</div>` : ''}</div>
       </div></div>
       <div class="answer-btns"><button class="btn bad" id="no">✗ Je ne savais pas <kbd>←</kbd></button><button class="btn good" id="yes">✓ Je savais <kbd>→</kbd></button></div>`);
+    bindCardTools(d, cards, i, results, show);
     $('#card').onclick = flip;
     $('#no').onclick = () => answer(false);
     $('#yes').onclick = () => answer(true);
@@ -285,7 +421,7 @@ function flashcards(d, list) {
   function flip() { flipped = !flipped; $('#card').classList.toggle('on', flipped); $('#card .front').classList.add('again'); }
   function answer(ok) {
     if (!flipped) { flip(); return; } // on doit voir la réponse avant de juger
-    mark(cards[i].id, ok); results.push({ card: cards[i], ok }); i++; show();
+    record(results, cards[i], ok); i++; show();
   }
   show();
 }
@@ -314,11 +450,12 @@ function quiz(d, list) {
       <div class="q">${fieldHtml(cs, c, sd.front)}</div>
       <div class="choices">${opts.map((o, k) => `<button class="choice" data-k="${k}"><kbd>${k + 1}</kbd><span>${esc(o)}</span></button>`).join('')}</div>
       <div id="fb"></div>`);
+    bindCardTools(d, cards, i, results, show);
     let answered = false;
     const pick = (k) => {
       if (answered) return; answered = true;
       const ok = opts[k] === right;
-      mark(c.id, ok); results.push({ card: c, ok });
+      record(results, c, ok);
       app.querySelectorAll('.choice').forEach((b) => { const v = opts[+b.dataset.k]; b.disabled = true; if (v === right) b.classList.add('right'); else if (+b.dataset.k === k) b.classList.add('wrong'); });
       $('#fb').innerHTML = `<div class="feedback ${ok ? 'good' : 'bad'}"><b>${ok ? 'Bonne réponse !' : 'Raté.'}</b>
         ${cs.extra.length ? fieldHtml(cs, c, cs.extra, true) : ''}${settings.reverse ? fieldHtml(cs, c, cs.front) : ''}</div>
@@ -382,6 +519,7 @@ function writeMode(d, list) {
         <div class="row"><button class="btn primary">Valider</button><button type="button" class="btn ghost" id="skip">Je ne sais pas</button></div>
         ${cs.id === 'allemand' || cs.id === 'perso' ? '<div class="keys">' + ['ä', 'ö', 'ü', 'ß', 'é', 'è', 'ç'].map((k) => `<button type="button" class="key">${k}</button>`).join('') + '</div>' : ''}
       </form><div id="fb"></div>`);
+    bindCardTools(d, cards, i, results, show);
     const inp = $('#w'); inp.focus();
     app.querySelectorAll('.key').forEach((k) => k.onclick = () => { inp.setRangeText(k.textContent, inp.selectionStart, inp.selectionEnd, 'end'); inp.focus(); });
     let done = false;
@@ -399,7 +537,7 @@ function writeMode(d, list) {
         const over = $('#over');
         if (over) over.onclick = () => { ok = true; results[results.length - 1].ok = true; progress[c.id] = Math.max(1, level(c.id) + 1); store.set('progress', progress); render(); };
       };
-      mark(c.id, ok); results.push({ card: c, ok }); render();
+      record(results, c, ok); render();
     };
     const next = () => { i++; show(); };
     $('#wf').onsubmit = (e) => { e.preventDefault(); if (!done) finish(check(inp.value, target, cs.id === 'philo')); };
@@ -492,7 +630,7 @@ function backupView() {
     <div class="row"><button class="btn primary" id="dl">Télécharger la sauvegarde</button>
       <label class="btn">Restaurer un fichier…<input type="file" id="up" accept=".json,application/json" hidden></label></div>`);
   $('#dl').onclick = () => {
-    const blob = new Blob([JSON.stringify({ memento: 1, lists: userDecks(), progress, fav: store.get('fav', {}) })], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ memento: 1, lists: userDecks(), progress, fav: store.get('fav', {}), edits: cardEdits, hidden: cardHidden })], { type: 'application/json' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'memento-sauvegarde.json'; a.click(); URL.revokeObjectURL(a.href);
   };
   $('#up').onchange = async (e) => {
@@ -503,7 +641,10 @@ function backupView() {
       saveUserDecks(l.concat((j.lists || []).filter((x) => !ids.has(x.id))));
       progress = Object.assign(progress, j.progress || {}); store.set('progress', progress);
       store.set('fav', Object.assign(store.get('fav', {}), j.fav || {}));
-      toast('Sauvegarde restaurée'); location.hash = '#/';
+      store.set('edits', Object.assign(cardEdits, j.edits || {}));
+      store.set('hidden', Object.assign(cardHidden, j.hidden || {}));
+      // les cartes fournies sont lues au chargement : on recharge pour appliquer modifications et suppressions
+      location.hash = '#/'; location.reload();
     } catch { toast('Fichier non reconnu'); }
   };
 }

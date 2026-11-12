@@ -18,6 +18,9 @@ Elle marche sur téléphone et sur PC, et même hors ligne une fois ouverte (on 
 - **Cartes** : on retourne la carte, on dit si on savait (← / → au clavier).
 - **QCM** : quatre propositions (touches 1 à 4).
 - **Écrire** : on tape la réponse ; les fautes de frappe et d'accent sont tolérées (allemand, philo, listes perso).
+- Pendant une révision (et dans la liste des cartes d'un paquet) : **✎ Modifier** ou **🗑 Supprimer** la carte.
+  Dans « Mes listes », la modification est directe. Pour les cartes fournies, elle reste sur l'appareil (incluse dans la
+  sauvegarde) et une carte supprimée peut être rétablie depuis la page du paquet.
 - Options : sens inversé, nombre de cartes, seulement les cartes non maîtrisées, favoris ★, recherche dans tout le contenu.
 
 La progression (boîtes de Leitner), les listes et les favoris sont enregistrés **dans le navigateur**.
